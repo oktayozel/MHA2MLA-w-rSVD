@@ -47,7 +47,7 @@ def print_table(headers, rows):
 MODEL_SPECS = [
     {"label": "Small", "name": "HuggingFaceTB/SmolLM-135M"},
     {"label": "Medium", "name": "HuggingFaceTB/SmolLM-360M"},
-    {"label": "Large", "name": "HuggingFaceTB/SmolLM-1B7"},
+    {"label": "Large", "name": "HuggingFaceTB/SmolLM-1.7B"},
 ]
 
 
@@ -339,6 +339,11 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     rope_dim = max(2, rope_dim)
     if rope_dim % 2 != 0:
         rope_dim -= 1
+    
+    # Use more conservative low_rank to preserve model quality
+    # Aim for ~30-50% compression rather than extreme compression
+    kv_dim = model_config.num_key_value_heads * head_dim
+    low_rank = max(kv_dim // 2, 128)  # At least half the KV dimension or 128
 
     mha2mla_args = MHA2MLAModelArguments(
         model_name_or_path=model_name,
@@ -348,7 +353,7 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
         qk_tensor_path=None,
         svd_init_method="split",
         decomposition_method=decomposition_method,
-        low_rank=max(4, min(8, model_config.num_key_value_heads * 2)),
+        low_rank=low_rank,
         is_baseline=False,
         is_gqa2mha2mla=False,
         is_mla_from_scratch=False,
