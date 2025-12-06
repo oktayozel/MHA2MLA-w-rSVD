@@ -21,7 +21,7 @@ from mha2mla.svd_methods import SVD, rSVD, low_rank_decomposition
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from mha2mla.arguments import MHA2MLAModelArguments
 from mha2mla.patching_model_load import patch_model
-from mha2mla.patching_llama import mha2mla_llama
+from mha2mla.patching_llama import mha2mla_llama, restore_llama_attention
 
 
 def print_table(headers, rows):
@@ -358,66 +358,71 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     # Convert model
     print(f"\n2. Converting MHA→MLA with {decomposition_method.upper()}...")
     start_time = time.time()
+    patch_active = False
     
     try:
         mla_model, q_idx, k_idx = patch_model(model, model_config, mha2mla_args)
         mha2mla_llama(q_idx, k_idx)
+        patch_active = True
         conversion_time = time.time() - start_time
         print(f"   ✓ Conversion completed in {conversion_time:.2f}s")
+
+        # Count parameters after conversion
+        compressed_params = count_parameters(mla_model)
+        param_reduction = (1 - compressed_params / original_params) * 100
+        compression_ratio = original_params / compressed_params
+        
+        print(f"   Compressed parameters: {compressed_params:,}")
+        print(f"   Parameter reduction: {param_reduction:.2f}%")
+        print(f"   Compression ratio: {compression_ratio:.2f}x")
+        
+        # Verify structure
+        print(f"\n3. Verifying model structure...")
+        has_kv_proj = any("kv_proj" in name for name, _ in mla_model.named_modules())
+        
+        if has_kv_proj:
+            print(f"   ✓ Low-rank kv_proj layers created successfully")
+        else:
+            print(f"   ⚠ Warning: kv_proj layers not found")
+        
+        # Measure inference speed
+        print(f"\n4. Measuring inference speed...")
+        tokens_per_sec, elapsed = measure_inference_speed(mla_model, tokenizer, num_tokens=50, num_runs=5)
+        speedup = tokens_per_sec / baseline_model["inference_speed"]
+        print(f"   ✓ Inference speed: {tokens_per_sec:.2f} tokens/sec")
+        print(f"   Speedup vs baseline: {speedup:.2f}x")
+        
+        # Compute perplexity
+        print(f"\n5. Computing perplexity...")
+        perplexity = compute_perplexity_fast(mla_model, tokenizer, num_samples=30)
+        if perplexity and baseline_model["perplexity"]:
+            ppl_diff = perplexity - baseline_model["perplexity"]
+            ppl_pct = (ppl_diff / baseline_model["perplexity"]) * 100
+            print(f"   ✓ Perplexity: {perplexity:.2f}")
+            print(f"   Difference from baseline: {ppl_diff:+.2f} ({ppl_pct:+.1f}%)")
+        elif perplexity:
+            print(f"   ✓ Perplexity: {perplexity:.2f}")
+        
+        return {
+            "method": decomposition_method,
+            "conversion_time": conversion_time,
+            "original_params": original_params,
+            "compressed_params": compressed_params,
+            "param_reduction": param_reduction,
+            "compression_ratio": compression_ratio,
+            "inference_speed": tokens_per_sec,
+            "inference_speedup": speedup,
+            "perplexity": perplexity,
+            "success": has_kv_proj
+        }
     except Exception as e:
         print(f"   ❌ Conversion failed: {e}")
         import traceback
         traceback.print_exc()
         return None
-    
-    # Count parameters after conversion
-    compressed_params = count_parameters(mla_model)
-    param_reduction = (1 - compressed_params / original_params) * 100
-    compression_ratio = original_params / compressed_params
-    
-    print(f"   Compressed parameters: {compressed_params:,}")
-    print(f"   Parameter reduction: {param_reduction:.2f}%")
-    print(f"   Compression ratio: {compression_ratio:.2f}x")
-    
-    # Verify structure
-    print(f"\n3. Verifying model structure...")
-    has_kv_proj = any("kv_proj" in name for name, _ in mla_model.named_modules())
-    
-    if has_kv_proj:
-        print(f"   ✓ Low-rank kv_proj layers created successfully")
-    else:
-        print(f"   ⚠ Warning: kv_proj layers not found")
-    
-    # Measure inference speed
-    print(f"\n4. Measuring inference speed...")
-    tokens_per_sec, elapsed = measure_inference_speed(mla_model, tokenizer, num_tokens=50, num_runs=5)
-    speedup = tokens_per_sec / baseline_model["inference_speed"]
-    print(f"   ✓ Inference speed: {tokens_per_sec:.2f} tokens/sec")
-    print(f"   Speedup vs baseline: {speedup:.2f}x")
-    
-    # Compute perplexity
-    print(f"\n5. Computing perplexity...")
-    perplexity = compute_perplexity_fast(mla_model, tokenizer, num_samples=30)
-    if perplexity and baseline_model["perplexity"]:
-        ppl_diff = perplexity - baseline_model["perplexity"]
-        ppl_pct = (ppl_diff / baseline_model["perplexity"]) * 100
-        print(f"   ✓ Perplexity: {perplexity:.2f}")
-        print(f"   Difference from baseline: {ppl_diff:+.2f} ({ppl_pct:+.1f}%)")
-    elif perplexity:
-        print(f"   ✓ Perplexity: {perplexity:.2f}")
-    
-    return {
-        "method": decomposition_method,
-        "conversion_time": conversion_time,
-        "original_params": original_params,
-        "compressed_params": compressed_params,
-        "param_reduction": param_reduction,
-        "compression_ratio": compression_ratio,
-        "inference_speed": tokens_per_sec,
-        "inference_speedup": speedup,
-        "perplexity": perplexity,
-        "success": has_kv_proj
-    }
+    finally:
+        if patch_active:
+            restore_llama_attention()
 
 
 def test_model_conversions(model_specs):

@@ -18,6 +18,10 @@ from transformers.models.llama.modeling_llama import (
 logger = logging.get_logger(__name__)
 
 
+_ORIGINAL_LLAMA_FORWARD = LlamaAttention.forward
+_ORIGINAL_APPLY_ROPE = modeling_llama.apply_rotary_pos_emb
+
+
 def create_custom_apply_rotary_pos_emb(q_r_indices, k_r_indices):
     # Copied from transformers.models.llama.modeling_llama.apply_rotary_pos_emb
     def custom_apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -145,3 +149,8 @@ def mha2mla_llama(q_idx, k_idx):
     modeling_llama.apply_rotary_pos_emb = create_custom_apply_rotary_pos_emb(
         q_idx, k_idx
     )
+
+
+def restore_llama_attention():
+    LlamaAttention.forward = _ORIGINAL_LLAMA_FORWARD
+    modeling_llama.apply_rotary_pos_emb = _ORIGINAL_APPLY_ROPE
