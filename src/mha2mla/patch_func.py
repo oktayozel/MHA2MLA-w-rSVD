@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from .svd_methods import SVD
 
 
 def partial_rope_mask(model_args, mha2mla_args):
@@ -164,13 +165,6 @@ class LowRankKVLinear(nn.Module):
         kv = self.down_kv(x)
         # TODO: Triton kernel
         return kv
-
-
-def SVD(X, r):
-    U, S, V = torch.linalg.svd(X.to(torch.float32), full_matrices=False)
-    U, S, V = U[:, :r], S[:r], V[:r, :]
-    U @= torch.diag(S)
-    return V, U
 
 
 def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method):
