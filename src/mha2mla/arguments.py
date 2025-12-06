@@ -37,6 +37,24 @@ class MHA2MLAModelArguments:
             "help": "Method for SVD initialization. Options: 'split' or 'joint' or 'none'"
         },
     )
+    decomposition_method: str = field(
+        default="svd",
+        metadata={
+            "help": "Decomposition method for low-rank approximation. Options: 'svd' (standard) or 'rsvd' (randomized, faster)"
+        },
+    )
+    rsvd_oversampling: int = field(
+        default=10,
+        metadata={
+            "help": "Oversampling parameter for randomized SVD (only used when decomposition_method='rsvd')"
+        },
+    )
+    rsvd_n_iter: int = field(
+        default=2,
+        metadata={
+            "help": "Number of power iterations for randomized SVD (only used when decomposition_method='rsvd')"
+        },
+    )
     low_rank: int = field(
         default=8, metadata={"help": "Rank for low-rank approximation in MLA"}
     )
@@ -70,6 +88,19 @@ class MHA2MLAModelArguments:
             raise ValueError(
                 f"svd_init_method must be one of {valid_svd_methods}, got '{self.svd_init_method}'"
             )
+
+        # Validate decomposition_method
+        valid_decomposition_methods = ["svd", "rsvd"]
+        if self.decomposition_method not in valid_decomposition_methods:
+            raise ValueError(
+                f"decomposition_method must be one of {valid_decomposition_methods}, got '{self.decomposition_method}'"
+            )
+        
+        # Validate rsvd parameters
+        if self.rsvd_oversampling < 0:
+            raise ValueError(f"rsvd_oversampling must be non-negative, got {self.rsvd_oversampling}")
+        if self.rsvd_n_iter < 0:
+            raise ValueError(f"rsvd_n_iter must be non-negative, got {self.rsvd_n_iter}")
 
         # Check bool arguments to avoid conflict
         if self.is_gqa2mha2mla or self.is_mla_from_scratch:

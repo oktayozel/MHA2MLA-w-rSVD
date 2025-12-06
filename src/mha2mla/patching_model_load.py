@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from patch_func import partial_rope_mask, svd_low_rank_approx
+from .patch_func import partial_rope_mask, svd_low_rank_approx
 
 
 def reorder_matrix_rows(mask, is_cat=False):
@@ -97,6 +97,9 @@ def patch_model(model, model_args, mha2mla_args):
             v_bias=getattr(layer.self_attn.v_proj, "bias", None),
             d_kv_mid=mha2mla_args.low_rank * model_args.num_key_value_heads,
             method=mha2mla_args.svd_init_method,
+            decomposition_method=mha2mla_args.decomposition_method,
+            rsvd_oversampling=mha2mla_args.rsvd_oversampling,
+            rsvd_n_iter=mha2mla_args.rsvd_n_iter,
         )
         layer.self_attn.kv_proj = kv_proj
 

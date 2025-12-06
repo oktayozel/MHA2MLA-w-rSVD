@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .svd_methods import SVD
+from .svd_methods import SVD, low_rank_decomposition
 
 
 def partial_rope_mask(model_args, mha2mla_args):
@@ -135,16 +135,28 @@ class LowRankKVLinear(nn.Module):
         up_k_bias=None,
         up_v_bias=None,
     ):
+        def _assign_weight(linear_layer, weight_tensor):
+            target = linear_layer.weight.data
+            if weight_tensor.shape == target.shape:
+                target.copy_(weight_tensor)
+            elif weight_tensor.T.shape == target.shape:
+                target.copy_(weight_tensor.T)
+            else:
+                raise ValueError(
+                    "Weight shape mismatch: got "
+                    f"{tuple(weight_tensor.shape)} expected {tuple(target.shape)}"
+                )
+
         if down_kv_weight is not None:
-            self.down_kv.weight.data.copy_(down_kv_weight)
+            _assign_weight(self.down_kv, down_kv_weight)
         if down_k_weight is not None:
-            self.down_k.weight.data.copy_(down_k_weight)
+            _assign_weight(self.down_k, down_k_weight)
         if down_v_weight is not None:
-            self.down_v.weight.data.copy_(down_v_weight)
+            _assign_weight(self.down_v, down_v_weight)
         if up_k_weight is not None:
-            self.up_k.weight.data.copy_(up_k_weight)
+            _assign_weight(self.up_k, up_k_weight)
         if up_v_weight is not None:
-            self.up_v.weight.data.copy_(up_v_weight)
+            _assign_weight(self.up_v, up_v_weight)
         if up_k_bias is not None:
             self.up_k.bias.data.copy_(up_k_bias)
         if up_v_bias is not None:
@@ -167,14 +179,37 @@ class LowRankKVLinear(nn.Module):
         return kv
 
 
-def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method):
+def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method, 
+                        decomposition_method="svd", rsvd_oversampling=10, rsvd_n_iter=2):
     d_k_c, d_v, d_kv_in = k_c_weight.size(0), v_weight.size(0), v_weight.size(1)
     has_bias = k_c_bias is not None
 
+    # Create decomposition function with configured parameters
+    def decompose(X, r):
+        return low_rank_decomposition(
+            X,
+            r,
+            method=decomposition_method,
+            oversampling=rsvd_oversampling,
+            n_iter=rsvd_n_iter,
+        )
+
+    def effective_rank(*matrices):
+        max_rank = min(min(mat.size(0), mat.size(1)) for mat in matrices if mat is not None)
+        if max_rank == 0:
+            raise ValueError("Cannot compute low-rank approximation for empty matrices")
+        rank = min(d_kv_mid, max_rank)
+        if rank == 0:
+            raise ValueError(
+                "Requested low-rank dimension is zero; adjust `low_rank` or mask settings"
+            )
+        return rank
+
     if method == "only_key":
-        down_k, up_k = SVD(k_c_weight, d_kv_mid)
+        rank = effective_rank(k_c_weight)
+        down_k, up_k = decompose(k_c_weight, rank)
         kv_proj = LowRankKVLinear(
-            d_kv_in, d_k_c, d_v, d_mid=d_kv_mid, k_approx=True, bias=has_bias
+            d_kv_in, d_k_c, d_v, d_mid=rank, k_approx=True, bias=has_bias
         )
         kv_proj.reset_parameters(
             down_k_weight=down_k,
@@ -184,9 +219,10 @@ def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method
             up_v_bias=v_bias,
         )
     elif method == "only_value":
-        down_v, up_v = SVD(v_weight, d_kv_mid)
+        rank = effective_rank(v_weight)
+        down_v, up_v = decompose(v_weight, rank)
         kv_proj = LowRankKVLinear(
-            d_kv_in, d_k_c, d_v, d_mid=d_kv_mid, v_approx=True, bias=has_bias
+            d_kv_in, d_k_c, d_v, d_mid=rank, v_approx=True, bias=has_bias
         )
         kv_proj.reset_parameters(
             down_v_weight=down_v,
@@ -196,13 +232,14 @@ def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method
             up_v_bias=v_bias,
         )
     elif method == "split":
-        down_k, up_k = SVD(k_c_weight, d_kv_mid)
-        down_v, up_v = SVD(v_weight, d_kv_mid)
+        rank = effective_rank(k_c_weight, v_weight)
+        down_k, up_k = decompose(k_c_weight, rank)
+        down_v, up_v = decompose(v_weight, rank)
         kv_proj = LowRankKVLinear(
             d_kv_in,
             d_k_c,
             d_v,
-            d_mid=d_kv_mid,
+            d_mid=rank,
             k_approx=True,
             v_approx=True,
             bias=has_bias,
@@ -217,13 +254,14 @@ def svd_low_rank_approx(k_c_weight, k_c_bias, v_weight, v_bias, d_kv_mid, method
         )
     elif method == "joint":
         joint_kv = torch.cat([k_c_weight, v_weight])
-        down_kv, up_kv = SVD(joint_kv, d_kv_mid)
+        rank = effective_rank(joint_kv)
+        down_kv, up_kv = decompose(joint_kv, rank)
         up_k, up_v = up_kv.split([d_k_c, d_v])
         kv_proj = LowRankKVLinear(
             d_kv_in,
             d_k_c,
             d_v,
-            d_mid=d_kv_mid,
+            d_mid=rank,
             k_approx=True,
             v_approx=True,
             kv_joint=True,
