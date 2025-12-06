@@ -17,3 +17,59 @@ def SVD(X, r):
     U, S, V = U[:, :r], S[:r], V[:r, :]
     U @= torch.diag(S)
     return V, U
+
+
+def rSVD(X, r, oversampling=10, n_iter=2):
+    """
+    Randomized SVD with power iteration for faster low-rank approximation.
+    
+    This implementation uses random projection to approximate the range of X,
+    followed by power iteration to improve accuracy, and finally computes
+    SVD on a smaller matrix.
+    
+    Args:
+        X: Input matrix (m x n)
+        r: Target rank
+        oversampling: Additional samples for accuracy (default: 10)
+        n_iter: Number of power iterations for improved accuracy (default: 2)
+    
+    Returns:
+        V: Right singular vectors (r x n)
+        U: Left singular vectors with singular values absorbed (m x r)
+    """
+    # Convert to float32 for numerical stability
+    X = X.to(torch.float32)
+    m, n = X.shape
+    
+    # Determine the size of the random matrix
+    k = min(r + oversampling, min(m, n))
+    
+    # Step 1: Generate random Gaussian matrix
+    Omega = torch.randn(n, k, device=X.device, dtype=X.dtype)
+    
+    # Step 2: Form Y = X * Omega
+    Y = X @ Omega
+    
+    # Step 3: Power iteration to improve accuracy
+    for _ in range(n_iter):
+        Y = X @ (X.T @ Y)
+    
+    # Step 4: Orthonormalize Y using QR decomposition
+    Q, _ = torch.linalg.qr(Y)
+    
+    # Step 5: Form B = Q^T * X (smaller matrix)
+    B = Q.T @ X
+    
+    # Step 6: Compute SVD of the smaller matrix B
+    U_tilde, S, V = torch.linalg.svd(B, full_matrices=False)
+    
+    # Step 7: Recover U = Q * U_tilde
+    U = Q @ U_tilde
+    
+    # Step 8: Truncate to rank r
+    U, S, V = U[:, :r], S[:r], V[:r, :]
+    
+    # Step 9: Absorb singular values into U (to match SVD behavior)
+    U = U @ torch.diag(S)
+    
+    return V, U
