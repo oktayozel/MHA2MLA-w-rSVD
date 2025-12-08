@@ -17,6 +17,10 @@ from transformers.models.qwen2.modeling_qwen2 import (
 logger = logging.get_logger(__name__)
 
 
+_ORIGINAL_QWEN2_FORWARD = Qwen2Attention.forward
+_ORIGINAL_QWEN2_APPLY_ROPE = modeling_qwen2.apply_rotary_pos_emb
+
+
 def create_custom_apply_rotary_pos_emb(q_r_indices, k_r_indices):
     # Copied from transformers.models.llama.modeling_llama.apply_rotary_pos_emb
     def custom_apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -155,3 +159,8 @@ def mha2mla_qwen2(q_idx, k_idx):
     modeling_qwen2.apply_rotary_pos_emb = create_custom_apply_rotary_pos_emb(
         q_idx, k_idx
     )
+
+
+def restore_qwen2_attention():
+    Qwen2Attention.forward = _ORIGINAL_QWEN2_FORWARD
+    modeling_qwen2.apply_rotary_pos_emb = _ORIGINAL_QWEN2_APPLY_ROPE

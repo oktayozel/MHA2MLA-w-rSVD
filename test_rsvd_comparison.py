@@ -22,6 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from mha2mla.arguments import MHA2MLAModelArguments
 from mha2mla.patching_model_load import patch_model
 from mha2mla.patching_llama import mha2mla_llama, restore_llama_attention
+from mha2mla.patching_qwen2 import mha2mla_qwen2, restore_qwen2_attention
 
 
 def print_table(headers, rows):
@@ -46,8 +47,7 @@ def print_table(headers, rows):
 
 MODEL_SPECS = [
     {"label": "Small", "name": "HuggingFaceTB/SmolLM-135M"},
-    {"label": "Medium", "name": "HuggingFaceTB/SmolLM-360M"},
-    {"label": "Large", "name": "HuggingFaceTB/SmolLM-1.7B"},
+    {"label": "Medium", "name": "Qwen/Qwen2-0.5B"},   # Qwen2 attention, supported
 ]
 
 
@@ -273,12 +273,24 @@ def compute_perplexity_fast(model, tokenizer, num_samples=50):
 
 def test_baseline_model(model_name):
     """Test baseline (unconverted) model performance."""
+    import sys
     print(f"\n{'='*80}")
     print(f"BASELINE MODEL PERFORMANCE")
     print(f"{'='*80}")
     
     print(f"\n1. Loading baseline model: {model_name}")
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
+    print(f"   Checking cache and downloading if needed...")
+    sys.stdout.flush()
+    
+    start_load = time.time()
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=True
+    )
+    load_time = time.time() - start_load
+    print(f"   ✓ Model loaded in {load_time:.1f}s")
+    
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     if tokenizer.pad_token is None:
@@ -324,8 +336,20 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     print(f"{'='*80}")
     
     # Load fresh model with weights
+    import sys
     print(f"\n1. Loading model: {model_name}")
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
+    print(f"   Loading from cache...")
+    sys.stdout.flush()
+    
+    start_load = time.time()
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=True
+    )
+    load_time = time.time() - start_load
+    print(f"   ✓ Loaded in {load_time:.1f}s")
+    
     model_config = model.config
     tokenizer = baseline_model["tokenizer"]
     
@@ -333,25 +357,36 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     print(f"   ✓ Model loaded")
     print(f"   Original parameters: {original_params:,}")
     
-    # Create MHA2MLA arguments with proper config
-    head_dim = model_config.hidden_size // model_config.num_attention_heads
+    # Create MHA2MLA arguments following the paper's approach
+    # Derive attention dimensions with safe fallbacks for non-Llama configs
+    num_attn_heads = getattr(model_config, "num_attention_heads", None) or 1
+    num_kv_heads = getattr(model_config, "num_key_value_heads", num_attn_heads)
+    head_dim = model_config.hidden_size // num_attn_heads
     rope_dim = min(64, head_dim - 2)
     rope_dim = max(2, rope_dim)
     if rope_dim % 2 != 0:
         rope_dim -= 1
     
-    # Use more conservative low_rank to preserve model quality
-    # Aim for ~30-50% compression rather than extreme compression
-    kv_dim = model_config.num_key_value_heads * head_dim
-    low_rank = max(kv_dim // 2, 128)  # At least half the KV dimension or 128
+    # Use a fixed low_rank for actual compression
+    # Fixed rank gives consistent compression across model sizes
+    low_rank = 128  # Fixed rank for aggressive but quality-preserving compression
+    
+    print(f"\n   Configuration:")
+    print(f"   • hidden_size: {model_config.hidden_size}")
+    print(f"   • num_attention_heads: {num_attn_heads}")
+    print(f"   • num_key_value_heads: {num_kv_heads}")
+    print(f"   • head_dim: {head_dim}")
+    print(f"   • low_rank (d_kv_mid): {low_rank} (fixed)")
+    print(f"   • rope_dim: {rope_dim}")
+    print(f"   • compression method: joint")
 
     mha2mla_args = MHA2MLAModelArguments(
         model_name_or_path=model_name,
-        partial_rope_version="high",
+        partial_rope_version="low",
         rope_dim_for_mla=rope_dim,
         uniform_start_point=0,
         qk_tensor_path=None,
-        svd_init_method="split",
+        svd_init_method="joint",
         decomposition_method=decomposition_method,
         low_rank=low_rank,
         is_baseline=False,
@@ -367,8 +402,14 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     
     try:
         mla_model, q_idx, k_idx = patch_model(model, model_config, mha2mla_args)
-        mha2mla_llama(q_idx, k_idx)
-        patch_active = True
+        # Choose correct attention patch based on model type
+        model_type = getattr(model_config, "model_type", "")
+        if model_type.startswith("qwen2") or "qwen2" in model_name.lower():
+            mha2mla_qwen2(q_idx, k_idx)
+            patch_active = "qwen2"
+        else:
+            mha2mla_llama(q_idx, k_idx)
+            patch_active = "llama"
         conversion_time = time.time() - start_time
         print(f"   ✓ Conversion completed in {conversion_time:.2f}s")
 
@@ -426,8 +467,10 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
         traceback.print_exc()
         return None
     finally:
-        if patch_active:
+        if patch_active == "llama":
             restore_llama_attention()
+        elif patch_active == "qwen2":
+            restore_qwen2_attention()
 
 
 def test_model_conversions(model_specs):
