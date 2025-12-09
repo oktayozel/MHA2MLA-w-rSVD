@@ -367,16 +367,15 @@ def convert_model_with_method(model_name, baseline_model, decomposition_method, 
     if rope_dim % 2 != 0:
         rope_dim -= 1
     
-    # Use a fixed low_rank for actual compression
-    # Fixed rank gives consistent compression across model sizes
-    low_rank = 128  # Fixed rank for aggressive but quality-preserving compression
+    # Use a much smaller fixed low_rank for aggressive compression
+    low_rank = 32  # Very aggressive compression, will reduce KV params a lot
     
-    print(f"\n   Configuration:")
+    print(f"\n   Compression Configuration:")
     print(f"   • hidden_size: {model_config.hidden_size}")
     print(f"   • num_attention_heads: {num_attn_heads}")
     print(f"   • num_key_value_heads: {num_kv_heads}")
     print(f"   • head_dim: {head_dim}")
-    print(f"   • low_rank (d_kv_mid): {low_rank} (fixed)")
+    print(f"   • low_rank (d_kv_mid): {low_rank} (fixed, aggressive)")
     print(f"   • rope_dim: {rope_dim}")
     print(f"   • compression method: joint")
 
